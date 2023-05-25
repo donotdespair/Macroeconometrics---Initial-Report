@@ -24,7 +24,10 @@ Plots below
 #| warning: false
 
 library(lubridate)
-library(kableExtra)
+library(xtable)
+library(mvtnorm)
+library(plot3D)
+library(HDInterval)
 
 ##Nominal GDP per capita
 real.gdp <- readrba::read_rba(series_id = "GGDPCVGDP") 
@@ -89,7 +92,7 @@ Below are plots of each of the available variables over time.
 
 dates <- as.Date(rownames(data),format = "%Y-%m-%d")
 
-units <- c("$ millions","", "", "", "Per cent per annum", "$ billion", "Percent", "Percent","Percent","Percent")
+units <- c("","", "", "", "Per cent per annum", "$ billion", "Percent", "Percent","Percent","Percent")
 
 par(mfrow=c(2,2), mar=c(4,4,4,4))
 
@@ -129,11 +132,12 @@ results.adf0 <- data.frame("Variable" = character(),"Lag Order" = numeric(), "AD
 for (i in 1:8){
 adf = tseries::adf.test(data[,i], k = 4)
 results.adf0[i,1] <- paste(names[i])
-results.adf0[i,2] <- adf[2]
-results.adf0[i,3] <- adf[1]
-results.adf0[i,4] <- adf[4]
+results.adf0[i,2] <- adf$parameter
+results.adf0[i,3] <- adf$statistic
+results.adf0[i,4] <- adf$p.value
 
 }
+
 
 results.adf1 <- data.frame("Variable" = character(),"Lag Order" = numeric(), "ADF Statistic" = numeric(), "p value" = numeric())
 for (i in 1:8){
@@ -208,6 +212,17 @@ L(A,\Sigma|Y,X) \propto det(\Sigma)^{-\frac{T}{2}} exp \left\{-\frac{1}{2} tr \l
 \end{gather}
 
 where:
+
+
+
+$$Y_t=\begin{pmatrix}  GDP_t &= \text{Real GDP}
+\\ CPI_t  &= \text{Consumer Price Index}
+\\ CRT_p  &= \text{Cash Rate Target GDP}
+\\ M1_t  &= \text{Money Supply}
+\\ UR_t  &= \text{State Specific Unemployment Rate}
+\end{pmatrix}$$
+
+
 \begin{gather}
 \hat{A} = (X'X)^{-1}X'Y
 \end{gather}
@@ -282,20 +297,13 @@ calc.priors <- function(p, X, Y){
 
 
 
-
-
-
-
-
-
-
 Using these priors and the function below, we can calculate posteriors $A$, $B$, and $\Sigma$
 
 ```{R }
 #| echo: true
 
 
-calc.posteriors <- function (S, X, Y, priors){
+calc.posteriors <- function (p, S, X, Y, priors){
   
   N = ncol(Y)
   A.prior <- priors$A.prior
@@ -320,16 +328,18 @@ Sigma.posterior   = array(Sigma.posterior,c(N,N,S))
 A.posterior       = array(rnorm(prod(c(dim(A.bar),S))),c(dim(A.bar),S))
 L                 = t(chol(V.bar))
 B.posterior = array(NA, c(N,N,S))
-
+B1.posterior = array(NA,c(N,(1+N*p),S))
+  
 
 
 for (s in 1:S){
   chol.sigma = chol(Sigma.posterior[,,s])
   A.posterior[,,s]= A.bar + L%*%A.posterior[,,s]%*%chol.sigma
   B.posterior[,,s]= t(chol.sigma)
+  B1.posterior[,,s]= B.posterior[,,s]%*%t(A.posterior[,,s])
 }
   
-  posterior = list(A.posterior = A.posterior, B.posterior = B.posterior, Sigma.posterior = Sigma.posterior)
+  posterior = list(A.posterior = A.posterior, B.posterior = B.posterior, Sigma.posterior = Sigma.posterior, B1.posterior = B1.posterior)
   
   return(posterior)
 }
@@ -343,76 +353,21 @@ for (s in 1:S){
 
 ```{R}
 #| echo: true
-p = 2
-prior.ex <- function(Y, X, p){
-  in.obvs.Y <- Y[1:p,]
+prior.ex <- function(data, p = 1, lambda_3 = 1, lambda_4 = 1){
   
-  N = ncol(Y)
+  N = ncol(data)
   M = (N*p)+1
-  gamma.3 = 1
-  Y.D <- matrix(nrow = N, ncol = N)
-  X.D <- matrix(nrow = N, ncol = M)
   
-  
-  
-  for (i in 1:N){
-    if(p == 1){
-      dum.i = in.obvs.Y[i]
-    }
-    else{dum.i = mean(in.obvs.Y[,i])}
-    for (j in 1:N){
-      if(i == j){
-        Y.D[j,i] = (dum.i/gamma.3)}
-      else{Y.D[j,i] = 0}
-      
-    }
+  in.obvs.Y <- matrix(data[1:p,], ncol = N)
+  y.bar     = colMeans(in.obvs.Y)
+    
+  Y_star    = rbind(diag(y.bar)/lambda_3, y.bar/lambda_4)
+  X_star    = as.matrix(c(rep(0, N), 1/lambda_4))
+  for (i in 1:p) {
+    X_star  = cbind(Y_star, X_star)
   }
   
-  for(i in 1:N){
-      for(s in 1:M){
-        if(p == 1){
-      dum.i = in.obvs.Y[i]
-    }
-    else{dum.i = mean(in.obvs.Y[,i])}
-        if(s == i & s < M){
-          X.D[i, s] = dum.i
-        }
-        else{X.D[i,s] = 0}
-        
-  }}
-  
-  
-  
-  
-  gamma.4 = 1
-  
-  Y.temp = matrix(ncol = N, nrow = 1)
-  X.temp = matrix(ncol = M, nrow = 1)
-  
-  for (i in 1:N){
-    if(p == 1){
-      dum.i = mean(in.obvs.Y[i])
-    }
-    else{dum.i = mean(in.obvs.Y[,i])}
-    
-    Y.temp[i] = dum.i/gamma.4}
-  
-  for (s in 1:M){
-    if(s<=N){
-    if(p == 1){
-      dum.s = mean(in.obvs.Y[s])}
-    else{
-      dum.s = mean(in.obvs.Y[,s])}
-        if(s < M){
-        X.temp[s] = dum.s/gamma.4}
-    }
-  else{X.temp[s] = 1/gamma.4}}
-  
-  Y.ex = rbind(Y.D, Y.temp)
-  X.ex = rbind(X.D, X.temp)
-  XN <- rbind(X.ex, X)
-  YN <- rbind(Y.ex, Y)
-  ext.data <- list(YN = YN, XN = XN)
+  ext.data <- list(YN = Y_star, XN = X_star)
   
   return(ext.data)
   
@@ -434,52 +389,53 @@ y = apply(matrix(rnorm(2000), ncol = 2), 2, cumsum)
 
 Y = y[2:1000,]
 X = cbind(1, y[1:999,])
-
+S = 1000
 priors = calc.priors(p = 1, X = X, Y = Y)
 
-posteriors = calc.posteriors(S = 1000, X = X, Y= Y, priors)
+posteriors = calc.posteriors(p = 1, S = 1000, X = X, Y= Y, priors)
 ```
 
 
 A.posterior:
 ```{R}
-apply(posteriors$A.posterior, 1:2, mean)
+round(apply(posteriors$A.posterior, 1:2, mean),3)
 ```
 B.posterior:
 ```{R}
-apply(posteriors$B.posterior, 1:2, mean)
+round(apply(posteriors$B.posterior, 1:2, mean),3)
 ```
 Sigma.posterior:
 ```{R}
-apply(posteriors$Sigma.posterior, 1:2, mean)
+round(apply(posteriors$Sigma.posterior, 1:2, mean),3)
 ```
 ```{R}
 #| echo: true
 ##Extended model Test
-inital.dum = prior.ex(X = X, Y = Y, p = 1)
+inital.dum = prior.ex(y, p = 1)
 XN <- inital.dum$XN
 YN <- inital.dum$YN
 
+X.ex <- rbind(XN, X)
+Y.ex <- rbind(YN, Y)
 
+priors.ext = calc.priors(p = 1, X = X.ex, Y = Y.ex)
 
-priors.ext = calc.priors(p = 1, X = XN, Y = YN)
-
-posteriors.ext = calc.posteriors(S = 1000, X = XN,Y=YN, priors = priors.ext)
+posteriors.ext = calc.posteriors(p= 1,S = 1000, X = XN,Y=YN, priors = priors.ext)
 
 
 ```
 
 A.posterior:
 ```{R}
-apply(posteriors.ext$A.posterior, 1:2, mean)
+round(apply(posteriors.ext$A.posterior, 1:2, mean),3)
 ```
 B.posterior:
 ```{R}
-apply(posteriors.ext$B.posterior, 1:2, mean)
+round(apply(posteriors.ext$B.posterior, 1:2, mean),3)
 ```
 Sigma.posterior:
 ```{R}
-apply(posteriors.ext$Sigma.posterior, 1:2, mean)
+round(apply(posteriors.ext$Sigma.posterior, 1:2, mean))
 ```
 ## Empirical Estimation
 
@@ -501,10 +457,12 @@ for (i in 1:p){
 A.hat = solve(t(X)%*%X)%*%(t(X)%*%Y)
 Sigma.hat = diag(2)
 
+emp.initial.dum <- prior.ex(data = y, p = 2)
+X.emp <- rbind(emp.initial.dum$XN, X)
+Y.emp <- rbind(emp.initial.dum$YN, Y)
 
-priors = calc.priors(p = 2,X = X, Y = Y)
-
-posteriors.emp = calc.posteriors(S = 1000, X = X, Y= Y, priors)
+priors.emp = calc.priors(p = 2, X = X.emp, Y = Y.emp)
+posteriors.emp = calc.posteriors(p = 2,S = 1000, X = X, Y= Y, priors.emp)
 
 
 
@@ -512,16 +470,163 @@ posteriors.emp = calc.posteriors(S = 1000, X = X, Y= Y, priors)
 
 A.posterior:
 ```{R}
-apply(posteriors.emp$A.posterior, 1:2, mean)
+round(apply(posteriors.emp$A.posterior, 1:2, mean),3)
 ```
 B.posterior:
 ```{R}
-apply(posteriors.emp$B.posterior, 1:2, mean)
+round(apply(posteriors.emp$B.posterior, 1:2, mean),3)
 ```
 Sigma.posterior:
 ```{R}
-apply(posteriors.emp$Sigma.posterior, 1:2, mean)
+round(apply(posteriors.emp$Sigma.posterior, 1:2, mean),3)
 ```
+
+```{R}
+#IRFs
+A.posterior <- posteriors.emp$A.posterior
+B.posterior <- posteriors.emp$B.posterior
+
+SignRestrictions <- function(sign.restrictions, posteriors){
+  
+  A.posterior   = posteriors$A.posterior
+  B.posterior = posteriors$B.posterior
+  B1.posterior = posteriors$B1.posterior
+  Sigma.posterior = posteriors$Sigma.posterior
+  
+  S = dim(A.posterior)[3]
+  N = dim(B.posterior)[1]
+  p = (dim(B1.posterior)[2]-1)/N
+  
+  R1            = diag(sign.restrictions)
+  B0.draws      = array(NA,c(N,N,S))
+  B1.draws      = array(NA,c(N,(1+N*p),S))
+  pb = txtProgressBar(min = 0, max = S, initial = 0)
+for (s in 1:S){
+  
+  setTxtProgressBar(pb, s)
+  
+  B0.tilde <-B.posterior[,,s]
+  B1.tilde <-  B1.posterior[,,s]
+  A <- A.posterior[,,s]
+  Sigma <- Sigma.posterior[,,s]
+  
+  sign.restrictions.do.not.hold = TRUE
+
+  i=1
+  
+  while (sign.restrictions.do.not.hold){
+    X           = matrix(rnorm(N*N),N,N)
+    QR          = qr(X, tol = 1e-10)
+    Q           = qr.Q(QR,complete=TRUE)
+    R           = qr.R(QR,complete=TRUE)
+    Q           = t(Q %*% diag(sign(diag(R))))
+    B0          = Q%*%B0.tilde 
+    B0.inv      = solve(B0) 
+    # check       = prod(R1 %*% B0.inv %*% diag(N)[,1] > 0) # Check reponse at time 0
+    check       = prod(R1 %*% B0.inv %*% diag(N)[,1] >= 0)
+    
+    
+    if (check==1){sign.restrictions.do.not.hold=FALSE}
+    i=i+1
+  }
+  B1            = Q%*%B1.tilde 
+  B0.draws[,,s] = B0
+  B1.draws[,,s] = B1
+
+}
+  draws = list(B0.draws = B0.draws,B1.draws = B1.draws,i = i)
+  return (draws)
+}
+  
+sign.restictions = c(1,1,-1,1,-1)
+posteriors = posteriors.emp
+draws.emp <- SignRestrictions(sign.restictions, posteriors = posteriors.emp)
+
+B0.draws = draws.emp$B0.draws
+B1.draws = draws.emp$B1.draws
+
+A.posterior <- array(NA,c(N*p+1,N,S))
+B.posterior       = array(NA,c(N,N,S))
+S.check <- array(NA,c(N,N,S))
+
+for (s in 1:S){
+  #A.posterior[,,s] <- t(B1.draws[,,s]) %*% B0.draws[,,s]
+  #B.posterior[,,s] <- solve(B0.draws[,,s])
+}
+
+
+
+
+
+h = 20
+S = 1000
+N = ncol(Y)
+IRF.posterior     = array(NA,c(N,N,h+1,S))
+IRF.inf.posterior = array(NA,c(N,N,S))
+FEVD.posterior    = array(NA,c(N,N,h+1,S))
+J                 = cbind(diag(N),matrix(0,N,N*(p-1)))
+
+for (s in 1:S){
+  A.bold          = rbind(t(A.posterior[2:(1+N*p),,s]),cbind(diag(N*(p-1)),matrix(0,N*(p-1),N)))
+  IRF.inf.posterior[,,s]          = J %*% solve(diag(N*p)-A.bold) %*% t(J) %*% B.posterior[,,s]
+  
+  A.bold.power    = A.bold
+  for (i in 1:(h+1)){
+    if (i==1){
+      IRF.posterior[,,i,s]        = B.posterior[,,s]
+    } else {
+      IRF.posterior[,,i,s]        = J %*% A.bold.power %*% t(J) %*% B.posterior[,,s]
+      A.bold.power                = A.bold.power %*% A.bold
+    }
+    for (n in 1:N){
+      for (nn in 1:N){
+        FEVD.posterior[n,nn,i,s]  = sum(IRF.posterior[n,nn,1:i,s]^2)
+      }
+    }
+    FEVD.posterior[,,i,s]         = diag(1/apply(FEVD.posterior[,,i,s],1,sum))%*%FEVD.posterior[,,i,s]
+  }
+}
+FEVD.posterior    = 100*FEVD.posterior
+
+
+# save(IRF.posterior,IRF.inf.posterior, FEVD.posterior, file="irf-fevd-k002.RData")
+save(IRF.posterior,IRF.inf.posterior, FEVD.posterior, file="irf-fevd-k1.RData")
+load("irf-fevd-k1.RData")
+
+
+
+IRFs.k1           = apply(IRF.posterior[,1,,],1:2,mean)
+IRFs.inf.k1       = apply(IRF.inf.posterior[,1,],1,mean)
+rownames(IRFs.k1) = colnames(Y)
+
+IRFs.k1.hdi    = apply(IRF.posterior[,1,,],1:2,hdi, credMass=0.68)
+hh          = 1:5
+
+
+par(mfrow=c(3,2), mar=c(4,4.5,2,2),cex.axis=1.5, cex.lab=1.5)
+for (n in 1:5){
+  ylims     = range(IRFs.k1[n,hh],IRFs.k1.hdi[,n,hh])
+  plot(hh,IRFs.k1[n,hh], type="l", ylim=ylims, axes=FALSE, xlab="", ylab=rownames(IRFs.k1)[n])
+  if (n==5 | n==6){
+    axis(1,c(1,2,5,9),c("","1 quarter","1 year","2 years"))
+  } else {
+    axis(1,c(1,2,5,9),c("","","",""))
+  }
+  axis(2,c(ylims[1],0,ylims[2]),round(c(ylims[1],0,ylims[2]),3))
+  polygon(c(hh,(h+1):1), c(IRFs.k1.hdi[1,n,hh],IRFs.k1.hdi[2,n,(h+1):1]))
+  abline(h=0)
+  lines(hh, IRFs.k1[n,hh],lwd=2)
+}
+
+
+
+
+
+
+
+```
+
+
 ## References {.unnumbered}
 
 
